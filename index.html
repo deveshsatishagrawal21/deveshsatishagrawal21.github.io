@@ -22,20 +22,29 @@
         </svg>
       </div>
       <h1>ChatServer</h1>
-      <p class="login-sub">Real-time · No accounts · No passwords</p>
+      <p class="login-sub">Real-time · Claim your username · No email needed</p>
 
-      <div class="input-group">
+      <div class="login-fields">
         <input
           id="username-input"
           type="text"
-          placeholder="Choose a username…"
+          placeholder="Username"
           maxlength="24"
-          autocomplete="off"
+          autocomplete="username"
           spellcheck="false"
         />
-        <button id="join-btn">Join</button>
+        <input
+          id="key-input"
+          type="password"
+          placeholder="Secret key (your password)"
+          maxlength="128"
+          autocomplete="current-password"
+        />
+        <button id="join-btn" class="join-btn-full">Enter Chat</button>
       </div>
-      <p class="login-hint">Your username is stored locally. No password needed.</p>
+
+      <p id="login-status" class="login-status"></p>
+      <p class="login-hint">New username → account created automatically.<br>Same username → secret key must match.</p>
     </div>
   </div>
 
@@ -200,5 +209,6 @@
   <!-- Firebase v10 compat SDK (works without a bundler) -->
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
   <script src="app.js"></script>
   <script src="video.js"></script>

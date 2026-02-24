@@ -41,6 +41,7 @@ const AV_COLOURS    = 8;
    State
 ───────────────────────────────────────────────────── */
 let db;
+let firestoreDb;
 let username    = '';
 let currentRoom = '';
 let rooms       = [...DEFAULT_ROOMS];
@@ -99,7 +100,8 @@ function initFirebase() {
   }
   try {
     if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
-    db = firebase.database();
+    db          = firebase.database();
+    firestoreDb = firebase.firestore();
     return true;
   } catch (err) {
     console.error('Firebase init error:', err);
@@ -120,26 +122,88 @@ function showConfigError(detail) {
 }
 
 /* ─────────────────────────────────────────────────────
-   Login
+   SHA-256 key hashing  (Web Crypto API — no dependencies)
 ───────────────────────────────────────────────────── */
-function doLogin(raw) {
-  const name = raw.trim().replace(/[^\w\-. ]/g, '').slice(0, 24);
-  if (!name) { shakeInput($('username-input')); return; }
+async function hashKey(key) {
+  const buf  = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/* ─────────────────────────────────────────────────────
+   Login status helpers
+───────────────────────────────────────────────────── */
+function setLoginStatus(msg, type /* 'error'|'success'|'info' */) {
+  const el = $('login-status');
+  el.textContent = msg;
+  el.className   = 'login-status ' + (type || '');
+}
+
+function setLoginBusy(busy) {
+  const btn = $('join-btn');
+  btn.disabled    = busy;
+  btn.textContent = busy ? 'Checking…' : 'Enter Chat';
+}
+
+/* ─────────────────────────────────────────────────────
+   Login  — verifies / registers username via Firestore
+───────────────────────────────────────────────────── */
+async function doLogin(rawName, rawKey) {
+  const name = rawName.trim().replace(/[^\w\-. ]/g, '').slice(0, 24);
+  const key  = rawKey.trim();
+
+  if (!name) { setLoginStatus('Enter a username.', 'error'); $('username-input').focus(); return; }
+  if (!key)  { setLoginStatus('Enter a secret key.', 'error'); $('key-input').focus(); return; }
 
   if (!initFirebase()) return;
 
+  setLoginBusy(true);
+  setLoginStatus('Checking…', 'info');
+
+  try {
+    const keyHash = await hashKey(key);
+    const userRef = firestoreDb.collection('users').doc(name);
+    const snap    = await userRef.get();
+
+    if (!snap.exists) {
+      // ── New username: register it ───────────────────
+      await userRef.set({
+        username:  name,
+        keyHash,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        lastSeen:  firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      setLoginStatus('Account created! Welcome, ' + name, 'success');
+    } else {
+      // ── Existing username: verify key ───────────────
+      if (snap.data().keyHash !== keyHash) {
+        setLoginStatus('Wrong secret key for "' + name + '".', 'error');
+        setLoginBusy(false);
+        return;
+      }
+      userRef.update({ lastSeen: firebase.firestore.FieldValue.serverTimestamp() });
+      setLoginStatus('Welcome back, ' + name + '!', 'success');
+    }
+  } catch (err) {
+    setLoginStatus('Error: ' + err.message, 'error');
+    setLoginBusy(false);
+    return;
+  }
+
+  // ── Auth passed — enter chat ────────────────────────
   username = name;
   localStorage.setItem('cs_username', username);
+
+  await new Promise(r => setTimeout(r, 600)); // let success message show briefly
 
   $('login-screen').classList.add('hidden');
   $('chat-screen').classList.remove('hidden');
   $('me-label').textContent = username;
+  setLoginBusy(false);
 
   $('connection-banner').classList.remove('hidden');
   $('connection-banner').textContent = 'Connecting to Firebase…';
-  $('connection-banner').style.cssText = '';  // reset any error styles
+  $('connection-banner').style.cssText = '';
 
-  // Show "connected" banner only until Firebase confirms
   db.ref('.info/connected').on('value', snap => {
     if (snap.val() === true) {
       $('connection-banner').classList.add('hidden');
@@ -425,19 +489,51 @@ function closeMobileSidebar() {
 /* ─────────────────────────────────────────────────────
    Event wiring
 ───────────────────────────────────────────────────── */
-$('join-btn').addEventListener('click', () => doLogin($('username-input').value));
-$('username-input').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin($('username-input').value); });
+$('join-btn').addEventListener('click', () => doLogin($('username-input').value, $('key-input').value));
+
+// Tab from username → secret key; Enter from key → submit
+$('username-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); $('key-input').focus(); }
+});
+$('key-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); doLogin($('username-input').value, $('key-input').value); }
+});
 
 $('send-btn').addEventListener('click', sendMessage);
 $('message-input').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
 
-$('change-name-btn').addEventListener('click', () => {
-  const n = prompt('New username:', username);
-  if (!n) return;
-  const clean = n.trim().replace(/[^\w\-. ]/g, '').slice(0, 24);
+$('change-name-btn').addEventListener('click', async () => {
+  const newName = prompt('New username:');
+  if (!newName) return;
+  const clean = newName.trim().replace(/[^\w\-. ]/g, '').slice(0, 24);
   if (!clean || clean === username) return;
+
+  const key = prompt('Secret key for "' + clean + '"\n(enter new key to register, or existing key to reclaim):');
+  if (!key) return;
+
+  let keyHash;
+  try { keyHash = await hashKey(key.trim()); } catch (_) { return; }
+
+  const userRef = firestoreDb.collection('users').doc(clean);
+  const snap    = await userRef.get();
+
+  if (snap.exists && snap.data().keyHash !== keyHash) {
+    alert('Wrong secret key for "' + clean + '".');
+    return;
+  }
+  if (!snap.exists) {
+    await userRef.set({
+      username:  clean,
+      keyHash,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      lastSeen:  firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  } else {
+    userRef.update({ lastSeen: firebase.firestore.FieldValue.serverTimestamp() });
+  }
+
   const old = username;
   username  = clean;
   localStorage.setItem('cs_username', username);
