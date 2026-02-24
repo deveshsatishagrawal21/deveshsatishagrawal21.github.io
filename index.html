@@ -89,6 +89,13 @@
         <span id="room-title">general</span>
         <span class="header-sep">—</span>
         <span id="room-desc" class="room-desc"></span>
+        <button id="call-btn" class="icon-btn call-header-btn" title="Start video call">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
+            <path d="M15 10l4.553-2.276A1 1 0 0121 8.723v6.554a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"
+              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span id="call-indicator" class="call-indicator hidden"></span>
+        </button>
       </header>
 
       <div class="messages" id="messages">
@@ -136,9 +143,62 @@
     </div>
   </div>
 
+  <!-- ── VIDEO CALL OVERLAY ── -->
+  <div id="call-overlay" class="call-overlay hidden">
+    <div class="call-topbar">
+      <div class="call-topbar-left">
+        <span class="call-live-dot"></span>
+        <span class="call-topbar-title">Video Call — <strong id="call-room-label">#general</strong></span>
+        <span id="call-count-label" class="call-count-badge">1</span>
+      </div>
+      <div class="call-topbar-right">
+        <button id="pip-btn" class="ctrl-btn" title="Picture-in-picture">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            <rect x="2" y="3" width="20" height="14" rx="2" stroke="currentColor" stroke-width="2"/>
+            <rect x="12" y="11" width="8" height="5" rx="1" fill="currentColor"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div id="video-grid" class="video-grid"></div>
+
+    <div class="call-controls">
+      <button id="mute-btn" class="ctrl-btn" title="Toggle microphone">
+        <svg id="mic-icon" width="20" height="20" viewBox="0 0 24 24" fill="none">
+          <path d="M12 1a4 4 0 0 1 4 4v6a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4z"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path d="M19 10a7 7 0 0 1-14 0M12 19v4M8 23h8"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+
+      <button id="camera-btn" class="ctrl-btn" title="Toggle camera">
+        <svg id="cam-icon" width="20" height="20" viewBox="0 0 24 24" fill="none">
+          <path d="M15 10l4.553-2.276A1 1 0 0121 8.723v6.554a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+
+      <button id="share-screen-btn" class="ctrl-btn" title="Share screen">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+          <rect x="2" y="3" width="20" height="13" rx="2" stroke="currentColor" stroke-width="2"/>
+          <path d="M8 21h8M12 17v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path d="M9 10l3-3 3 3M12 7v6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+
+      <button id="end-call-btn" class="ctrl-btn end-call-btn" title="Leave call">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path d="M16.5 13.5l2.25-2.25a2.12 2.12 0 0 0 0-3l-1.5-1.5a2.12 2.12 0 0 0-3 0L13 8M7.5 10.5L5.25 8.25a2.12 2.12 0 0 0-3 0l-1.5 1.5a2.12 2.12 0 0 0 0 3L3 15M3 3l18 18"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
   <!-- Firebase v10 compat SDK (works without a bundler) -->
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
   <script src="app.js"></script>
-</body>
-</html>
+  <script src="video.js"></script>
