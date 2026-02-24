@@ -1,57 +1,64 @@
 /**
  * ChatServer — app.js
- * P2P real-time chat powered by Gun.js
+ * Real-time chat powered by Firebase Realtime Database
+ * ─────────────────────────────────────────────────────
+ * ONE-TIME SETUP (takes ~3 minutes):
  *
- * Architecture:
- *   gun.get('cs1').get('rooms').get(<room>).get('messages').get(<id>)  → message node
- *   gun.get('cs1').get('presence').get(<username>)                     → presence node
+ *  1. Go to https://console.firebase.google.com
+ *  2. Click "Add project" → give it any name → Continue
+ *  3. After creation, click the </> (Web) icon to register a web app
+ *     App nickname: ChatServer  |  Skip Firebase Hosting → Register App
+ *  4. Copy the firebaseConfig object shown, paste it below (replace the
+ *     placeholder values).
+ *  5. In the left sidebar: Build → Realtime Database → Create database
+ *     → choose a server location → Start in TEST MODE → Enable
+ *  6. Done — push to GitHub, the chat will work immediately.
  *
- * Gun.js syncs via localStorage + public relay peers.
- * All data is eventually consistent across connected browsers.
+ * IMPORTANT: "Test mode" rules expire after 30 days by default.
+ *   To make them permanent, go to Realtime Database → Rules and set:
+ *   { "rules": { ".read": true, ".write": true } }
+ * ─────────────────────────────────────────────────────
  */
 
-/* ─────────────────────────────────────────
-   Constants
-───────────────────────────────────────── */
-const NS          = 'cs1';          // Gun namespace (bump to reset shared state)
-const PEER_URLS   = [
-  'https://gundb-relay-mlc.glitch.me/gun',
-  'https://peer.wallie.io/gun',
-  'https://gun-manhattan.herokuapp.com/gun',
-];
-const PRESENCE_TTL = 90_000;        // ms — consider user offline after this
-const PING_INTERVAL = 30_000;       // ms — how often to refresh lastSeen
-const DEFAULT_ROOMS = ['general', 'random', 'tech', 'gaming', 'music'];
-
-/* Avatar colours — matched by CSS class .av-N */
-const AV_COLOURS = 8;
-
-/* ─────────────────────────────────────────
-   State
-───────────────────────────────────────── */
-let gun;
-let username     = '';
-let currentRoom  = '';
-let rooms        = [...DEFAULT_ROOMS];
-const messages   = {};      // roomName → { msgId: msgData }
-const onlineNow  = {};      // username → { username, lastSeen }
-let presencePing = null;
-let roomUnsub    = null;    // cleanup fn for current room listener
-
-/* ─────────────────────────────────────────
-   DOM helpers
-───────────────────────────────────────── */
-const $  = id => document.getElementById(id);
-const el = (tag, cls, html) => {
-  const e = document.createElement(tag);
-  if (cls)  e.className   = cls;
-  if (html) e.innerHTML   = html;
-  return e;
+/* ── Firebase config — replace ALL values below ── */
+const firebaseConfig = {
+  apiKey:            "AIzaSyBWQw7lyXRn9wzPEPfZ38WlFVNpjiiyuoc",
+  authDomain:        "chatserver-c8f55.firebaseapp.com",
+  databaseURL:       "https://chatserver-c8f55-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId:         "chatserver-c8f55",
+  storageBucket:     "chatserver-c8f55.firebasestorage.app",
+  messagingSenderId: "814307622727",
+  appId:             "1:814307622727:web:ab472a95e044f2e9e15662",
 };
+/* ─────────────────────────────────────────────── */
+
+const DB_ROOT       = 'cs1';            // bump to wipe shared data
+const MSG_HISTORY   = 120;             // messages loaded per room
+const DEFAULT_ROOMS = ['general', 'random', 'tech', 'gaming', 'music'];
+const AV_COLOURS    = 8;
+
+/* ─────────────────────────────────────────────────────
+   State
+───────────────────────────────────────────────────── */
+let db;
+let username    = '';
+let currentRoom = '';
+let rooms       = [...DEFAULT_ROOMS];
+
+// Per-room message cache: roomName → Map<firebaseKey, msgObj>
+const msgCache  = {};
+// Active Firebase listeners: roomName → { ref, handler }
+const listeners = {};
+
+/* ─────────────────────────────────────────────────────
+   DOM helpers
+───────────────────────────────────────────────────── */
+const $  = id  => document.getElementById(id);
+const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
 
 function esc(str) {
   const d = document.createElement('div');
-  d.appendChild(document.createTextNode(str));
+  d.appendChild(document.createTextNode(String(str)));
   return d.innerHTML;
 }
 
@@ -66,32 +73,60 @@ function fmtTime(ts) {
 }
 
 function fmtDate(ts) {
-  const d = new Date(ts);
+  const d   = new Date(ts);
   const now = new Date();
+  const y   = new Date(now); y.setDate(now.getDate() - 1);
   if (d.toDateString() === now.toDateString()) return 'Today';
-  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
-  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  if (d.toDateString() === y.toDateString())   return 'Yesterday';
   return d.toLocaleDateString([], { month: 'long', day: 'numeric', year: 'numeric' });
 }
 
-/* ─────────────────────────────────────────
-   Initialise Gun
-───────────────────────────────────────── */
-function initGun() {
-  gun = Gun(PEER_URLS);
-
-  // Show/hide connecting banner
-  $('connection-banner').classList.remove('hidden');
-  // Gun doesn't expose a clean "connected" event, but the banner
-  // auto-hides after the first successful message sync (see renderRoom).
+function linkify(html) {
+  return html.replace(
+    /https?:\/\/[^\s"<>&]+/g,
+    url => `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`
+  );
 }
 
-/* ─────────────────────────────────────────
+/* ─────────────────────────────────────────────────────
+   Firebase boot
+───────────────────────────────────────────────────── */
+function initFirebase() {
+  // Guard: show error if config is still placeholder
+  if (firebaseConfig.apiKey.startsWith('PASTE_')) {
+    showConfigError();
+    return false;
+  }
+  try {
+    if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+    db = firebase.database();
+    return true;
+  } catch (err) {
+    console.error('Firebase init error:', err);
+    showConfigError(err.message);
+    return false;
+  }
+}
+
+function showConfigError(detail) {
+  const banner = $('connection-banner');
+  banner.textContent = detail
+    ? `Firebase error: ${detail}`
+    : '⚠ Firebase not configured. See setup instructions at the top of app.js.';
+  banner.style.background  = 'rgba(224,82,96,.15)';
+  banner.style.color       = 'var(--red)';
+  banner.style.borderColor = 'rgba(224,82,96,.3)';
+  banner.classList.remove('hidden');
+}
+
+/* ─────────────────────────────────────────────────────
    Login
-───────────────────────────────────────── */
-function doLogin(name) {
-  name = name.trim().replace(/[^\w\-. ]/g, '').slice(0, 24);
+───────────────────────────────────────────────────── */
+function doLogin(raw) {
+  const name = raw.trim().replace(/[^\w\-. ]/g, '').slice(0, 24);
   if (!name) { shakeInput($('username-input')); return; }
+
+  if (!initFirebase()) return;
 
   username = name;
   localStorage.setItem('cs_username', username);
@@ -100,10 +135,24 @@ function doLogin(name) {
   $('chat-screen').classList.remove('hidden');
   $('me-label').textContent = username;
 
-  initGun();
+  $('connection-banner').classList.remove('hidden');
+  $('connection-banner').textContent = 'Connecting to Firebase…';
+  $('connection-banner').style.cssText = '';  // reset any error styles
+
+  // Show "connected" banner only until Firebase confirms
+  db.ref('.info/connected').on('value', snap => {
+    if (snap.val() === true) {
+      $('connection-banner').classList.add('hidden');
+    } else {
+      $('connection-banner').classList.remove('hidden');
+      $('connection-banner').textContent = 'Reconnecting…';
+    }
+  });
+
   startPresence();
+  loadCustomRooms();
   renderSidebar();
-  joinRoom(rooms[0]);
+  joinRoom('general');
 }
 
 function shakeInput(input) {
@@ -112,172 +161,195 @@ function shakeInput(input) {
   setTimeout(() => { input.style.borderColor = ''; }, 1200);
 }
 
-/* ─────────────────────────────────────────
-   Presence
-───────────────────────────────────────── */
-function startPresence() {
-  const me = gun.get(NS).get('presence').get(username);
-
-  function ping() {
-    me.put({ username, lastSeen: Date.now(), online: true });
+/* ─────────────────────────────────────────────────────
+   Presence  (uses Firebase onDisconnect — server-side)
+───────────────────────────────────────────────────── */
+function startPresence(oldUsername) {
+  // Mark previous username offline if changing name
+  if (oldUsername) {
+    db.ref(`${DB_ROOT}/presence/${oldUsername}`).update({ online: false });
   }
 
-  ping();
-  presencePing = setInterval(ping, PING_INTERVAL);
+  const presRef = db.ref(`${DB_ROOT}/presence/${username}`);
 
-  window.addEventListener('beforeunload', () => {
-    me.put({ username, lastSeen: Date.now(), online: false });
+  db.ref('.info/connected').on('value', snap => {
+    if (!snap.val()) return;
+
+    // Server removes presence automatically on unexpected disconnect
+    presRef.onDisconnect().update({
+      online:   false,
+      lastSeen: firebase.database.ServerValue.TIMESTAMP,
+    });
+
+    presRef.set({
+      username,
+      online:   true,
+      lastSeen: firebase.database.ServerValue.TIMESTAMP,
+    });
   });
 
   // Watch all presence nodes
-  gun.get(NS).get('presence').map().on((data, key) => {
-    if (!data || !data.username) return;
-    const alive = data.online && (Date.now() - data.lastSeen < PRESENCE_TTL);
-    if (alive) {
-      onlineNow[key] = data;
-    } else {
-      delete onlineNow[key];
-    }
-    renderOnlineUsers();
+  db.ref(`${DB_ROOT}/presence`).on('value', snap => {
+    const data = snap.val() || {};
+    renderOnlineUsers(data);
   });
-
-  // Recheck staleness every 30 s (Gun fires on() only when data changes)
-  setInterval(() => {
-    Object.keys(onlineNow).forEach(k => {
-      if (Date.now() - onlineNow[k].lastSeen >= PRESENCE_TTL) {
-        delete onlineNow[k];
-      }
-    });
-    renderOnlineUsers();
-  }, 30_000);
 }
 
-/* ─────────────────────────────────────────
-   Sidebar render
-───────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────
+   Sidebar
+───────────────────────────────────────────────────── */
 function renderSidebar() {
   const list = $('room-list');
   list.innerHTML = '';
   rooms.forEach(r => {
     const li = el('li', 'room-item' + (r === currentRoom ? ' active' : ''));
     li.innerHTML = `<span class="hash">#</span> ${esc(r)}`;
-    li.addEventListener('click', () => {
-      closeMobileSidebar();
-      joinRoom(r);
-    });
+    li.addEventListener('click', () => { closeMobileSidebar(); joinRoom(r); });
     list.appendChild(li);
   });
 }
 
-function renderOnlineUsers() {
+function renderOnlineUsers(presenceData) {
   const list  = $('user-list');
   const count = $('online-count');
-  const users = Object.values(onlineNow);
-  count.textContent = users.length;
-  list.innerHTML = '';
-  users.forEach(u => {
+  const now   = Date.now();
+
+  const online = Object.values(presenceData)
+    .filter(u => u && u.online && u.username);
+
+  count.textContent = online.length;
+  list.innerHTML    = '';
+
+  online.forEach(u => {
     const li = el('li', 'user-item');
     li.innerHTML = `<span class="presence-dot online"></span> ${esc(u.username)}`;
     list.appendChild(li);
   });
 }
 
-/* ─────────────────────────────────────────
-   Room switching
-───────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────
+   Rooms
+───────────────────────────────────────────────────── */
 function joinRoom(room) {
   if (room === currentRoom) return;
 
   currentRoom = room;
-  $('room-title').textContent = room;
-  $('message-input').placeholder = `Message #${room}…`;
+  if (!msgCache[room]) msgCache[room] = new Map();
 
-  // Reset message cache for this room
-  if (!messages[room]) messages[room] = {};
+  $('room-title').textContent       = room;
+  $('message-input').placeholder    = `Message #${room}…`;
 
   renderSidebar();
-  renderMessages(room);
+  clearMessages();
   subscribeRoom(room);
 }
 
 function subscribeRoom(room) {
-  // Re-subscribe: Gun listeners accumulate, so we key them by room
-  // and simply filter by currentRoom when rendering.
-  gun.get(NS).get('rooms').get(room).get('messages').map().on((data, key) => {
-    if (!data || !data.text || !data.ts) return;
+  // Detach listener from previous room (save Firebase reads)
+  const prev = listeners[room];
+  if (prev) prev.ref.off('child_added', prev.handler);
 
-    // Hide connection banner on first data received
-    $('connection-banner').classList.add('hidden');
+  const ref     = db.ref(`${DB_ROOT}/rooms/${room}/messages`).limitToLast(MSG_HISTORY);
+  const cache   = msgCache[room];
+  let   initial = true;   // batch the first load
 
-    if (!messages[room]) messages[room] = {};
-    messages[room][key] = data;
+  const handler = snap => {
+    const msg = snap.val();
+    if (!msg || !msg.text || !msg.ts) return;
+    cache.set(snap.key, msg);
+    if (!initial && room === currentRoom) appendMessage(snap.key, msg, cache);
+  };
 
-    if (room === currentRoom) renderMessages(room);
+  ref.once('value', () => {
+    // All child_added events for existing data have fired
+    initial = false;
+    if (room === currentRoom) renderAllMessages(room);
   });
+
+  ref.on('child_added', handler);
+  listeners[room] = { ref, handler };
 }
 
-/* ─────────────────────────────────────────
+/* ─────────────────────────────────────────────────────
    Message rendering
-───────────────────────────────────────── */
-function renderMessages(room) {
+───────────────────────────────────────────────────── */
+function clearMessages() {
+  $('messages').innerHTML = `<div class="messages-placeholder"><p>Loading…</p></div>`;
+}
+
+function renderAllMessages(room) {
   const container = $('messages');
-  const bucket    = messages[room] || {};
-  const sorted    = Object.values(bucket)
-    .filter(m => m && m.text && m.ts)
-    .sort((a, b) => a.ts - b.ts);
+  const sorted    = sortedMessages(room);
 
   if (sorted.length === 0) {
     container.innerHTML = `<div class="messages-placeholder"><p>No messages yet. Say hello!</p></div>`;
     return;
   }
 
-  const wasAtBottom =
-    container.scrollHeight - container.clientHeight <= container.scrollTop + 60;
-
   container.innerHTML = '';
+  let lastAuthor = null, lastTs = 0, lastDay = null;
 
-  let lastAuthor = null;
-  let lastTs     = 0;
-  let lastDay    = null;
-
-  sorted.forEach(msg => {
+  sorted.forEach(([key, msg]) => {
     const day = fmtDate(msg.ts);
     if (day !== lastDay) {
-      container.appendChild(makeDayDivider(day));
-      lastDay    = day;
-      lastAuthor = null;
+      container.appendChild(makeDivider(day));
+      lastDay = day; lastAuthor = null;
     }
-
-    const grouped = lastAuthor === msg.author && (msg.ts - lastTs) < 5 * 60_000;
+    const grouped = lastAuthor === msg.author && (msg.ts - lastTs) < 300_000;
     container.appendChild(makeMsgRow(msg, grouped));
-
     lastAuthor = msg.author;
     lastTs     = msg.ts;
   });
 
+  container.scrollTop = container.scrollHeight;
+}
+
+/** Append a single new message (called for live child_added events) */
+function appendMessage(key, msg, cache) {
+  const container = $('messages');
+  const placeholder = container.querySelector('.messages-placeholder');
+  if (placeholder) placeholder.remove();
+
+  const sorted = sortedMessages(currentRoom);
+  const idx    = sorted.findIndex(([k]) => k === key);
+  const prev   = idx > 0 ? sorted[idx - 1][1] : null;
+
+  const grouped = prev && prev.author === msg.author && (msg.ts - prev.ts) < 300_000;
+
+  // Insert day divider if needed
+  const day     = fmtDate(msg.ts);
+  const prevDay = prev ? fmtDate(prev.ts) : null;
+  if (day !== prevDay) container.appendChild(makeDivider(day));
+
+  const wasAtBottom = container.scrollHeight - container.clientHeight <= container.scrollTop + 80;
+  container.appendChild(makeMsgRow(msg, grouped));
   if (wasAtBottom) container.scrollTop = container.scrollHeight;
 }
 
-function makeDayDivider(label) {
-  const div = el('div', 'day-divider');
-  div.textContent = label;
-  return div;
+function sortedMessages(room) {
+  return [...(msgCache[room] || new Map()).entries()].sort(([, a], [, b]) => a.ts - b.ts);
+}
+
+function makeDivider(label) {
+  const d = el('div', 'day-divider');
+  d.textContent = label;
+  return d;
 }
 
 function makeMsgRow(msg, grouped) {
-  const row   = el('div', 'msg-row' + (grouped ? ' grouped' : ''));
-  const isMe  = msg.author === username;
-  const avCls = avatarClass(msg.author);
+  const row  = el('div', 'msg-row' + (grouped ? ' grouped' : ''));
+  const isMe = msg.author === username;
+  const av   = avatarClass(msg.author);
 
   if (grouped) {
     row.innerHTML = `
-      <div class="msg-avatar ${avCls}"></div>
+      <div class="msg-avatar ${av}"></div>
       <div class="msg-body">
         <span class="msg-text">${linkify(esc(msg.text))}</span>
       </div>`;
   } else {
     row.innerHTML = `
-      <div class="msg-avatar ${avCls}">${esc(msg.author[0])}</div>
+      <div class="msg-avatar ${av}">${esc(msg.author[0])}</div>
       <div class="msg-body">
         <div class="msg-header">
           <span class="msg-author${isMe ? ' is-me' : ''}">${esc(msg.author)}</span>
@@ -286,48 +358,39 @@ function makeMsgRow(msg, grouped) {
         <span class="msg-text">${linkify(esc(msg.text))}</span>
       </div>`;
   }
-
   return row;
 }
 
-/** Turns http/https URLs in already-escaped text into clickable links */
-function linkify(html) {
-  return html.replace(
-    /https?:\/\/[^\s&"<>]+/g,
-    url => `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`
-  );
-}
-
-/* ─────────────────────────────────────────
-   Send message
-───────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────
+   Send
+───────────────────────────────────────────────────── */
 function sendMessage() {
   const input = $('message-input');
   const text  = input.value.trim();
-  if (!text || !currentRoom) return;
-
+  if (!text || !currentRoom || !db) return;
   input.value = '';
+  $('send-btn').disabled = true;
+  setTimeout(() => { $('send-btn').disabled = false; }, 400);
 
-  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-  gun.get(NS).get('rooms').get(currentRoom).get('messages').get(id).put({
+  db.ref(`${DB_ROOT}/rooms/${currentRoom}/messages`).push({
     text,
-    author : username,
-    ts     : Date.now(),
+    author: username,
+    ts:     firebase.database.ServerValue.TIMESTAMP,
   });
 }
 
-/* ─────────────────────────────────────────
+/* ─────────────────────────────────────────────────────
    Create room
-───────────────────────────────────────── */
+───────────────────────────────────────────────────── */
 function createRoom(raw) {
-  const name = raw.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/--+/g, '-').replace(/^-|-$/g, '').slice(0, 30);
-  if (!name)            return alert('Invalid channel name.');
-  if (rooms.includes(name)) { joinRoom(name); return; }
-
-  rooms.push(name);
-  // Persist custom rooms in localStorage
-  saveCustomRooms();
-  renderSidebar();
+  const name = raw.trim().toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-').replace(/-{2,}/g, '-').replace(/^-|-$/g, '').slice(0, 30);
+  if (!name) { alert('Invalid channel name.'); return; }
+  if (!rooms.includes(name)) {
+    rooms.push(name);
+    saveCustomRooms();
+    renderSidebar();
+  }
   joinRoom(name);
 }
 
@@ -343,91 +406,70 @@ function loadCustomRooms() {
   } catch (_) {}
 }
 
-/* ─────────────────────────────────────────
+/* ─────────────────────────────────────────────────────
    Mobile sidebar
-───────────────────────────────────────── */
+───────────────────────────────────────────────────── */
 function openMobileSidebar() {
-  const sb = document.querySelector('.sidebar');
-  sb.classList.add('open');
-
+  document.querySelector('.sidebar').classList.add('open');
   if (!document.querySelector('.sidebar-overlay')) {
     const ov = el('div', 'sidebar-overlay');
     ov.addEventListener('click', closeMobileSidebar);
     document.body.appendChild(ov);
   }
 }
-
 function closeMobileSidebar() {
   document.querySelector('.sidebar')?.classList.remove('open');
   document.querySelector('.sidebar-overlay')?.remove();
 }
 
-/* ─────────────────────────────────────────
+/* ─────────────────────────────────────────────────────
    Event wiring
-───────────────────────────────────────── */
-// Login
+───────────────────────────────────────────────────── */
 $('join-btn').addEventListener('click', () => doLogin($('username-input').value));
 $('username-input').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin($('username-input').value); });
 
-// Send
 $('send-btn').addEventListener('click', sendMessage);
 $('message-input').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
 
-// Change username
 $('change-name-btn').addEventListener('click', () => {
   const n = prompt('New username:', username);
   if (!n) return;
   const clean = n.trim().replace(/[^\w\-. ]/g, '').slice(0, 24);
-  if (!clean) return;
-
-  // Mark old username offline
-  gun.get(NS).get('presence').get(username).put({ username, lastSeen: Date.now(), online: false });
-  clearInterval(presencePing);
-
-  username = clean;
+  if (!clean || clean === username) return;
+  const old = username;
+  username  = clean;
   localStorage.setItem('cs_username', username);
   $('me-label').textContent = username;
-  startPresence();
+  startPresence(old);
 });
 
-// Add room button
 $('add-room-btn').addEventListener('click', () => {
   $('room-modal').classList.remove('hidden');
   $('room-name-input').value = '';
-  $('room-name-input').focus();
+  setTimeout(() => $('room-name-input').focus(), 50);
 });
-
 $('room-cancel-btn').addEventListener('click', () => $('room-modal').classList.add('hidden'));
-
 $('room-create-btn').addEventListener('click', () => {
   createRoom($('room-name-input').value);
   $('room-modal').classList.add('hidden');
 });
-
 $('room-name-input').addEventListener('keydown', e => {
   if (e.key === 'Enter')  { createRoom($('room-name-input').value); $('room-modal').classList.add('hidden'); }
   if (e.key === 'Escape') { $('room-modal').classList.add('hidden'); }
 });
-
-// Close modal on backdrop click
 $('room-modal').addEventListener('click', e => {
   if (e.target === $('room-modal')) $('room-modal').classList.add('hidden');
 });
 
-// Mobile menu
 $('menu-btn').addEventListener('click', openMobileSidebar);
 
-/* ─────────────────────────────────────────
+/* ─────────────────────────────────────────────────────
    Boot
-───────────────────────────────────────── */
+───────────────────────────────────────────────────── */
 (function boot() {
-  loadCustomRooms();
   const saved = localStorage.getItem('cs_username');
-  if (saved) {
-    $('username-input').value = saved;
-    // Don't auto-login; let user confirm they still want that name
-  }
+  if (saved) $('username-input').value = saved;
   $('username-input').focus();
 })();
