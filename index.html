@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ChatServer — Genuine P2P Chat</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ── LOGIN SCREEN ── -->
+  <div id="login-screen" class="screen">
+    <div class="login-card">
+      <div class="login-logo">
+        <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+          <rect width="40" height="40" rx="12" fill="#4f8ef7"/>
+          <path d="M8 12h24v14a3 3 0 0 1-3 3H11a3 3 0 0 1-3-3V12z" fill="white" fill-opacity=".9"/>
+          <path d="M14 29l3-3h10" stroke="white" stroke-width="2" stroke-linecap="round"/>
+          <rect x="13" y="17" width="4" height="2" rx="1" fill="#4f8ef7"/>
+          <rect x="20" y="17" width="7" height="2" rx="1" fill="#4f8ef7"/>
+          <rect x="13" y="21" width="10" height="2" rx="1" fill="#4f8ef7"/>
+        </svg>
+      </div>
+      <h1>ChatServer</h1>
+      <p class="login-sub">Peer-to-peer · No accounts · No servers</p>
+
+      <div class="input-group">
+        <input
+          id="username-input"
+          type="text"
+          placeholder="Choose a username…"
+          maxlength="24"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button id="join-btn">Join</button>
+      </div>
+      <p class="login-hint">Your username is stored locally. No password needed.</p>
+    </div>
+  </div>
+
+  <!-- ── CHAT SCREEN ── -->
+  <div id="chat-screen" class="screen hidden">
+
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-top">
+        <div class="sidebar-brand">
+          <svg width="22" height="22" viewBox="0 0 40 40" fill="none">
+            <rect width="40" height="40" rx="10" fill="#4f8ef7"/>
+            <path d="M8 12h24v14a3 3 0 0 1-3 3H11a3 3 0 0 1-3-3V12z" fill="white" fill-opacity=".9"/>
+            <path d="M14 29l3-3h10" stroke="white" stroke-width="2" stroke-linecap="round"/>
+            <rect x="13" y="17" width="4" height="2" rx="1" fill="#4f8ef7"/>
+            <rect x="20" y="17" width="7" height="2" rx="1" fill="#4f8ef7"/>
+            <rect x="13" y="21" width="10" height="2" rx="1" fill="#4f8ef7"/>
+          </svg>
+          <span class="brand-name">ChatServer</span>
+        </div>
+
+        <div class="sidebar-me">
+          <span class="presence-dot online"></span>
+          <span id="me-label" class="me-name"></span>
+          <button id="change-name-btn" title="Change username" class="icon-btn">&#9998;</button>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <div class="nav-section-header">
+          <span>CHANNELS</span>
+          <button id="add-room-btn" class="icon-btn" title="New channel">+</button>
+        </div>
+        <ul id="room-list"></ul>
+      </nav>
+
+      <div class="sidebar-online">
+        <div class="nav-section-header">
+          <span>ONLINE — <span id="online-count">0</span></span>
+        </div>
+        <ul id="user-list"></ul>
+      </div>
+    </aside>
+
+    <!-- Main chat -->
+    <div class="chat-wrap">
+      <header class="chat-header">
+        <button id="menu-btn" class="icon-btn menu-btn"
+          aria-label="Toggle sidebar">&#9776;</button>
+        <span class="hash-icon">#</span>
+        <span id="room-title">general</span>
+        <span class="header-sep">—</span>
+        <span id="room-desc" class="room-desc"></span>
+      </header>
+
+      <div class="messages" id="messages">
+        <div class="messages-placeholder">
+          <p>No messages yet. Say hello!</p>
+        </div>
+      </div>
+
+      <div id="connection-banner" class="connection-banner hidden">
+        Connecting to peers…
+      </div>
+
+      <div class="input-row">
+        <input
+          id="message-input"
+          type="text"
+          placeholder="Message #general…"
+          maxlength="1000"
+          autocomplete="off"
+          spellcheck="true"
+        />
+        <button id="send-btn" title="Send (Enter)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <path d="M22 2L11 13" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M22 2L15 22L11 13L2 9L22 2z" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- New-room modal -->
+  <div id="room-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <h2>New Channel</h2>
+      <p>Lowercase letters, numbers, hyphens only.</p>
+      <input id="room-name-input" type="text" placeholder="channel-name"
+        maxlength="30" autocomplete="off" spellcheck="false"/>
+      <div class="modal-actions">
+        <button id="room-cancel-btn" class="btn-secondary">Cancel</button>
+        <button id="room-create-btn" class="btn-primary">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
